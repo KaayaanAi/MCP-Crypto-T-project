@@ -1,0 +1,364 @@
+# MCP-Crypto Production Deployment Guide
+
+## Pre-Deployment Checklist
+
+### ✅ System Requirements
+- [ ] Ubuntu 20.04+ / CentOS 8+ / Debian 11+
+- [ ] Python 3.12+
+- [ ] Docker & Docker Compose (optional)
+- [ ] Node.js 18+ (for PM2)
+- [ ] Minimum 2GB RAM, 10GB storage
+
+### ✅ API Keys Setup
+- [ ] Binance API key with "Read Info" permissions
+- [ ] CoinGecko API key (Pro recommended for production)
+- [ ] CoinMarketCap API key
+- [ ] All keys tested and working
+
+## Quick Deployment (Recommended)
+
+### 1. Server Setup
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install dependencies
+sudo apt install -y python3.12 python3.12-venv python3-pip git curl
+
+# Clone repository
+git clone <your-repo-url>
+cd mcp-crypto
+```
+
+### 2. Environment Configuration
+```bash
+# Copy and edit environment file
+cp .env.example .env
+nano .env
+
+# Set your API keys:
+BINANCE_API_KEY=your_actual_key_here
+BINANCE_SECRET_KEY=your_actual_secret_here
+COINGECKO_API_KEY=your_actual_key_here
+COINMARKETCAP_API_KEY=your_actual_key_here
+ENVIRONMENT=production
+PORT=8000
+```
+
+### 3. Docker Deployment (Easiest)
+```bash
+# Install Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER
+
+# Install Docker Compose
+sudo curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+
+# Deploy
+docker-compose up -d
+
+# Verify
+docker-compose logs -f
+curl http://localhost:8000/health
+```
+
+## Manual Deployment with PM2
+
+### 1. Python Environment Setup
+```bash
+# Create virtual environment
+python3.12 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 2. PM2 Process Manager
+```bash
+# Install Node.js and PM2
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo npm install -g pm2
+
+# Start application
+pm2 start "venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000" --name mcp-crypto
+
+# Configure auto-start
+pm2 save
+pm2 startup
+# Follow the command output to setup startup script
+
+# Monitor
+pm2 logs mcp-crypto
+pm2 monit
+```
+
+## Nginx Reverse Proxy Setup
+
+### 1. Install and Configure Nginx
+```bash
+sudo apt install nginx
+
+# Create configuration
+sudo nano /etc/nginx/sites-available/mcp-crypto
+```
+
+### 2. Nginx Configuration
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;  # Replace with your domain
+
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        proxy_read_timeout 86400;
+    }
+}
+```
+
+### 3. Enable Site
+```bash
+sudo ln -s /etc/nginx/sites-available/mcp-crypto /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+## SSL/HTTPS Setup (Production Required)
+
+### Using Certbot (Let's Encrypt)
+```bash
+# Install certbot
+sudo apt install certbot python3-certbot-nginx
+
+# Get SSL certificate
+sudo certbot --nginx -d your-domain.com
+
+# Test auto-renewal
+sudo certbot renew --dry-run
+```
+
+## Monitoring and Logging
+
+### 1. Application Logs
+```bash
+# PM2 logs
+pm2 logs mcp-crypto --lines 100
+
+# Docker logs
+docker-compose logs -f --tail=100
+
+# System logs
+sudo journalctl -u nginx -f
+```
+
+### 2. Health Monitoring
+```bash
+# Health check script
+#!/bin/bash
+HEALTH_URL="http://localhost:8000/health"
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" $HEALTH_URL)
+
+if [ $RESPONSE -eq 200 ]; then
+    echo "✅ MCP-Crypto API is healthy"
+else
+    echo "❌ MCP-Crypto API is down (HTTP $RESPONSE)"
+    # Add alerting logic here
+fi
+```
+
+### 3. Performance Monitoring
+```bash
+# Install htop for system monitoring
+sudo apt install htop
+
+# Check API performance
+curl -w "@curl-format.txt" -o /dev/null -s "http://localhost:8000/mcp/crypto?symbol=BTCUSDT"
+
+# Create curl-format.txt:
+echo "     time_namelookup:  %{time_namelookup}\n
+        time_connect:  %{time_connect}\n
+     time_appconnect:  %{time_appconnect}\n
+    time_pretransfer:  %{time_pretransfer}\n
+       time_redirect:  %{time_redirect}\n
+  time_starttransfer:  %{time_starttransfer}\n
+                     ----------\n
+          time_total:  %{time_total}\n" > curl-format.txt
+```
+
+## Backup and Recovery
+
+### 1. Configuration Backup
+```bash
+# Backup script
+#!/bin/bash
+BACKUP_DIR="/backup/mcp-crypto/$(date +%Y%m%d)"
+mkdir -p $BACKUP_DIR
+
+# Backup configuration
+cp .env $BACKUP_DIR/
+cp docker-compose.yml $BACKUP_DIR/
+cp -r logs $BACKUP_DIR/ 2>/dev/null || true
+
+echo "Backup completed: $BACKUP_DIR"
+```
+
+### 2. Automated Backups
+```bash
+# Add to crontab
+crontab -e
+
+# Daily backup at 2 AM
+0 2 * * * /path/to/mcp-crypto/backup.sh
+```
+
+## Security Considerations
+
+### 1. Firewall Setup
+```bash
+# Configure UFW
+sudo ufw enable
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow ssh
+sudo ufw allow 80
+sudo ufw allow 443
+```
+
+### 2. API Key Security
+- Store API keys in environment variables only
+- Never commit `.env` file to version control
+- Use least privilege principle for API permissions
+- Rotate API keys regularly
+- Monitor API usage for anomalies
+
+### 3. Rate Limiting
+```nginx
+# Add to Nginx configuration
+http {
+    limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+    
+    server {
+        location /mcp/crypto {
+            limit_req zone=api burst=20 nodelay;
+            # ... rest of configuration
+        }
+    }
+}
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**Service Won't Start**
+```bash
+# Check logs
+pm2 logs mcp-crypto
+docker-compose logs
+
+# Check port availability
+sudo netstat -tlnp | grep :8000
+
+# Check permissions
+ls -la .env
+```
+
+**High Memory Usage**
+```bash
+# Monitor memory
+htop
+docker stats
+
+# Reduce data fetch limits
+# Edit default limit in routes/crypto.py
+```
+
+**API Rate Limits**
+```bash
+# Check API status in logs
+# Implement exponential backoff
+# Consider upgrading API plans
+```
+
+### Performance Optimization
+
+**1. Database Caching (Optional)**
+```bash
+# Install Redis for caching
+sudo apt install redis-server
+
+# Add caching layer for repeated requests
+pip install redis aioredis
+```
+
+**2. Load Balancing (High Traffic)**
+```bash
+# Multiple instances with PM2
+pm2 start ecosystem.config.js
+
+# Create ecosystem.config.js:
+module.exports = {
+  apps: [{
+    name: 'mcp-crypto',
+    script: 'venv/bin/uvicorn',
+    args: 'main:app --host 0.0.0.0 --port 8000',
+    instances: 'max',
+    exec_mode: 'cluster'
+  }]
+}
+```
+
+## Maintenance
+
+### Regular Tasks
+- [ ] Weekly: Check logs for errors
+- [ ] Weekly: Verify API key limits
+- [ ] Monthly: Update dependencies
+- [ ] Monthly: Security updates
+- [ ] Quarterly: Performance review
+
+### Update Procedure
+```bash
+# 1. Backup current version
+./backup.sh
+
+# 2. Pull updates
+git pull origin main
+
+# 3. Update dependencies
+pip install -r requirements.txt --upgrade
+
+# 4. Restart service
+pm2 restart mcp-crypto
+# or
+docker-compose restart
+
+# 5. Verify functionality
+curl http://localhost:8000/health
+```
+
+---
+
+## 🚀 Production Checklist
+
+- [ ] API keys configured and tested
+- [ ] SSL certificate installed
+- [ ] Monitoring setup (health checks)
+- [ ] Backup system configured
+- [ ] Firewall rules applied
+- [ ] Documentation updated
+- [ ] Team trained on operations
+
+**Your MCP-Crypto API is now production-ready!** 🎉

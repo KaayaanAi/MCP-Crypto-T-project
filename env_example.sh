@@ -1,0 +1,13 @@
+# Binance API Configuration
+BINANCE_API_KEY=your_binance_api_key_here
+BINANCE_SECRET_KEY=your_binance_secret_key_here
+
+# CoinGecko API Configuration
+COINGECKO_API_KEY=your_coingecko_api_key_here
+
+# CoinMarketCap API Configuration
+COINMARKETCAP_API_KEY=your_coinmarketcap_api_key_here
+
+# Application Configuration
+PORT=8000
+ENVIRONMENT=development
